@@ -912,6 +912,24 @@ void parse_msp_data(uint16_t ident, uint8_t *packet, uint8_t packet_size, Hardwa
         }
         break;
 
+    case PSA_IDENT_SET_TRIP_RESET:
+        if (data_size != sizeof(struct psa_trip_reset_data))
+        {
+            send_set_response(ident, PSA_MSP_INVALID_DATA_SIZE, serial);
+        }
+        else
+        {
+            struct psa_trip_reset_data *trip_data = (struct psa_trip_reset_data *)data;
+
+            if (send_VAN_trip_reset((enum psa_trip_meter)trip_data->trip_meter))
+            {
+                send_set_response(ident, PSA_MSP_INVALID_DATA, serial);
+            }
+
+            send_set_response(ident, PSA_MSP_OK, serial);
+        }
+        break;
+
     default:
         send_set_response(ident, PSA_MSP_UNKNOWN_IDENT, serial);
         break;
@@ -1161,7 +1179,6 @@ void receive_msp_message(HardwareSerial *serial)
 {
     while (serial->available() >= sizeof(struct psa_header))
     {
-
         // If the start byte is found, start reading the message
         if (serial->peek() == 0x69)
         {
@@ -1211,6 +1228,29 @@ void AnswerToCDC()
     cd_changer_emu_packet.packet.footer = new_header_byte;
 
     VANInterface->set_channel_for_immediate_reply_message(8, 0x4EC, cd_changer_emu_packet.buffer, 12);
+}
+
+int send_VAN_trip_reset(enum psa_trip_meter trip_meter)
+{
+    uint8_t trip_reset_data[2] = {0x00, 0xFF};
+
+    switch (trip_meter)
+    {
+    case PSA_TRIP_A:
+        trip_reset_data[0] = 0xA0;
+        VANInterface->set_channel_for_transmit_message(7, 0x5E4, trip_reset_data, 2, 1);
+        return 0;
+        break;
+
+    case PSA_TRIP_B:
+        trip_reset_data[0] = 0x60;
+        VANInterface->set_channel_for_transmit_message(7, 0x5E4, trip_reset_data, 2, 1);
+        return 0;
+        break;
+    default:
+        return 1;
+        break;
+    }
 }
 
 #endif // USE_SOFTWARE_VAN

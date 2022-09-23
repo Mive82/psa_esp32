@@ -18,6 +18,7 @@ enum psa_idents
     PSA_IDENT_CD_PLAYER = 0x4010,     // Send the CD player packet
 
     PSA_IDENT_SET_CD_CHANGER_DATA = 0x4501, // Send CD changer player data
+    PSA_IDENT_SET_TRIP_RESET = 0x4502,      // Send trip reset request
 
     PSA_IDENT_TIME = 0x5000,       // Send the ESP RTC time
     PSA_IDENT_ESP32_TEMP = 0x5100, // Send the ESP temperature, borked
@@ -72,6 +73,12 @@ enum psa_car_state
     PSA_STATE_CRANKING,      // Engine cranking
     PSA_STATE_ENGINE_ON,     // Engine ON.
     PSA_STATE_UNKNOWN,       // Some logic is wrong, this should not appear
+};
+
+enum psa_trip_meter
+{
+    PSA_TRIP_A = 1,
+    PSA_TRIP_B = 2,
 };
 
 /**
@@ -411,6 +418,18 @@ struct psa_cd_changer_packet
 {
     struct psa_header header;
     struct psa_cd_changer_data data;
+    uint8_t crc;
+} __attribute__((packed));
+
+struct psa_trip_reset_data
+{
+    uint8_t trip_meter; // enum psa_trip_meter, trip meter to reset
+} __attribute__((packed));
+
+struct psa_trip_reset_packet
+{
+    struct psa_header header;
+    struct psa_trip_reset_data data;
     uint8_t crc;
 } __attribute__((packed));
 

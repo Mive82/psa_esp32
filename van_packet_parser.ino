@@ -239,7 +239,7 @@ static int psa_parse_dash_iden(
     struct psa_van_dashboard *van_data = (struct psa_van_dashboard *)data;
 
     dash_data->accesories_on = van_data->accesories_on;
-    dash_data->backlight_off = van_data->brightness;
+    dash_data->backlight_off = van_data->is_backlight_off;
     dash_data->brightness = van_data->brightness;
     dash_data->door_open = van_data->door_open;
     dash_data->economy_mode = van_data->economy_mode;
@@ -332,6 +332,8 @@ static int psa_parse_radio_tuner_iden(
     struct psa_van_radio_freq_info *van_data = (struct psa_van_radio_freq_info *)data;
     struct psa_radio_data *radio_data = (struct psa_radio_data *)data_buffers->radio_data;
 
+    struct psa_preset_data *preset_data = (struct psa_preset_data *)data_buffers->presets_data;
+
     memset(radio_data->station, 0, 9);
     strncpy(radio_data->station, (const char *)van_data->station, 8);
 
@@ -343,6 +345,12 @@ static int psa_parse_radio_tuner_iden(
     // radio_data->freq = uint16_t(van_data->frequency[1]) << 8 | van_data->frequency[0]; // swap_endian_uint16(van_data->frequency);
 
     radio_data->preset = van_data->memory_position;
+
+    if (radio_data->preset > 0 && radio_data->preset <= 6)
+    {
+        strncpy(preset_data->presets[radio_data->preset - 1].preset_name, (const char *)van_data->station, 8);
+        preset_data->presets->preset_num = radio_data->preset;
+    }
 
     switch (van_data->band)
     {
@@ -819,10 +827,10 @@ int psa_parse_van_packet_esp32(
         {
             return psa_parse_radio_cd_long_iden(data, (struct psa_output_data_buffers *)data_buffers);
         }
-        else if (size == 12)
-        {
-            return psa_parse_radio_preset_iden(data, (struct psa_output_data_buffers *)data_buffers);
-        }
+        // else if (size == 12)
+        // {
+        //     return psa_parse_radio_preset_iden(data, (struct psa_output_data_buffers *)data_buffers);
+        // }
         else
         {
             return PSA_INVALID_VAN_PACKET_SIZE;
