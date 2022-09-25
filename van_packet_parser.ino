@@ -332,7 +332,7 @@ static int psa_parse_radio_tuner_iden(
     struct psa_van_radio_freq_info *van_data = (struct psa_van_radio_freq_info *)data;
     struct psa_radio_data *radio_data = (struct psa_radio_data *)data_buffers->radio_data;
 
-    struct psa_preset_data *preset_data = (struct psa_preset_data *)data_buffers->presets_data;
+    struct psa_preset_data *preset_data = NULL;
 
     memset(radio_data->station, 0, 9);
     strncpy(radio_data->station, (const char *)van_data->station, 8);
@@ -346,34 +346,39 @@ static int psa_parse_radio_tuner_iden(
 
     radio_data->preset = van_data->memory_position;
 
-    if (radio_data->preset > 0 && radio_data->preset <= 6)
-    {
-        strncpy(preset_data->presets[radio_data->preset - 1].preset_name, (const char *)van_data->station, 8);
-        preset_data->presets->preset_num = radio_data->preset;
-    }
-
     switch (van_data->band)
     {
     case PSA_VAN_BAND_FM1:
         radio_data->band = PSA_FM_1;
+        preset_data = (struct psa_preset_data *)data_buffers->presets_data_fm_1;
         break;
     case PSA_VAN_BAND_FM2:
         radio_data->band = PSA_FM_2;
+        preset_data = (struct psa_preset_data *)data_buffers->presets_data_fm_2;
         break;
     case PSA_VAN_BAND_FM3:
         radio_data->band = PSA_FM_3;
         break;
     case PSA_VAN_BAND_FMAST:
         radio_data->band = PSA_FM_AST;
+        preset_data = (struct psa_preset_data *)data_buffers->presets_data_fm_ast;
+
         break;
     case PSA_VAN_BAND_AM:
         radio_data->band = PSA_AM_1;
+        preset_data = (struct psa_preset_data *)data_buffers->presets_data_am;
         break;
     case PSA_VAN_BAND_NONE:
     case PSA_VAN_BAND_PTY_SELECT:
     default:
         radio_data->band = PSA_NONE;
         break;
+    }
+
+    if (radio_data->preset > 0 && radio_data->preset <= 6 && preset_data != NULL)
+    {
+        strncpy(preset_data->presets[radio_data->preset - 1].preset_name, (const char *)van_data->station, 8);
+        preset_data->presets->preset_num = radio_data->preset;
     }
 
     return PSA_OK;
@@ -516,36 +521,36 @@ static int psa_parse_radio_preset_iden(
     uint8_t const *const data,
     struct psa_output_data_buffers *data_buffers)
 {
-    if (data_buffers == NULL)
-    {
-        return PSA_NULL_PTR;
-    }
+    // if (data_buffers == NULL)
+    // {
+    //     return PSA_NULL_PTR;
+    // }
 
-    if (data_buffers->presets_data == NULL)
-    {
-        return PSA_NULL_PTR;
-    }
+    // if (data_buffers->presets_data == NULL)
+    // {
+    //     return PSA_NULL_PTR;
+    // }
 
-    if (data[1] != 0xD3) // D3 is preset info
-    {
-        return PSA_UNKNOWN_IDEN;
-    }
+    // if (data[1] != 0xD3) // D3 is preset info
+    // {
+    //     return PSA_UNKNOWN_IDEN;
+    // }
 
-    struct psa_van_radio_preset_info *van_data = (struct psa_van_radio_preset_info *)data;
+    // struct psa_van_radio_preset_info *van_data = (struct psa_van_radio_preset_info *)data;
 
-    struct psa_preset_data *preset_data = (struct psa_preset_data *)data_buffers->presets_data;
+    // struct psa_preset_data *preset_data = (struct psa_preset_data *)data_buffers->presets_data;
 
-    if (van_data->position > 0 && van_data->position < 7)
-    {
-        memset(preset_data->presets[van_data->position].preset_name, 0, 10);
-        strncpy(preset_data->presets[van_data->position].preset_name, (const char *)van_data->station_name, 8);
+    // if (van_data->position > 0 && van_data->position < 7)
+    // {
+    //     memset(preset_data->presets[van_data->position].preset_name, 0, 10);
+    //     strncpy(preset_data->presets[van_data->position].preset_name, (const char *)van_data->station_name, 8);
 
-        preset_data->presets[van_data->position].preset_num = van_data->position;
-    }
-    else
-    {
-        return PSA_INVALID_VAN_PACKET;
-    }
+    //     preset_data->presets[van_data->position].preset_num = van_data->position;
+    // }
+    // else
+    // {
+    //     return PSA_INVALID_VAN_PACKET;
+    // }
 
     return PSA_OK;
 }

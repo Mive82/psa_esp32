@@ -10,6 +10,15 @@ enum psa_voltmeter_resolution
     PSA_VOLTMETER_12_BIT = 1,
 };
 
+enum psa_radio_preset_band
+{
+    PSA_PRESET_AM = 0,
+    PSA_PRESET_FM_1 = 1,
+    PSA_PRESET_FM_2 = 2,
+    PSA_PRESET_FMAST = 3,
+    PSA_PRESET_MAX = 4,
+};
+
 /**
  * @brief Attempts to read the internal temperature of the ESP32.
  *

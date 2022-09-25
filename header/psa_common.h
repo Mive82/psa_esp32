@@ -23,7 +23,10 @@ struct psa_output_data_buffers
 {
     void *engine_data;
     void *radio_data;
-    void *presets_data;
+    void *presets_data_am;
+    void *presets_data_fm_1;
+    void *presets_data_fm_2;
+    void *presets_data_fm_ast;
     void *cd_player_data;
     void *headunit_data;
     void *door_data;

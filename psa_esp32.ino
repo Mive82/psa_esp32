@@ -209,11 +209,11 @@ SemaphoreHandle_t mutex = xSemaphoreCreateMutex(); // A mutex just in case, prob
 #endif
 
 RTC_DATA_ATTR uint8_t presets_data_valid = 0;
-RTC_DATA_ATTR union radio_presets_union store_presets_packet;
+RTC_DATA_ATTR union radio_presets_union store_presets_packet[4];
 
 union engine_packet_union engine_packet;
 union radio_packet_union radio_packet;
-union radio_presets_union presets_packet;
+union radio_presets_union presets_packet[4];
 union headunit_packet_union headunit_packet;
 union cd_player_packet_union cd_packet;
 union vin_packet_union vin_packet;
@@ -572,12 +572,16 @@ void init_radio_packet()
 }
 void init_presets_packet()
 {
-    presets_packet.packet.header.start = MSP_START_MAGIC;
-    presets_packet.packet.header.direction = '>';
-    presets_packet.packet.header.ident = PSA_IDENT_RADIO_PRESETS;
-    presets_packet.packet.header.size = sizeof(struct psa_preset_data);
+    for (int i = 0; i < PSA_PRESET_MAX; ++i)
+    {
 
-    presets_packet.packet.crc = 0;
+        presets_packet[i].packet.header.start = MSP_START_MAGIC;
+        presets_packet[i].packet.header.direction = '>';
+        presets_packet[i].packet.header.ident = PSA_IDENT_RADIO_PRESETS;
+        presets_packet[i].packet.header.size = sizeof(struct psa_preset_data);
+
+        presets_packet[i].packet.crc = 0;
+    }
 }
 
 void init_headunit_packet()
@@ -782,6 +786,20 @@ void on_wifi_ip_callback(WiFiEvent_t event, WiFiEventInfo_t info)
 #endif // ESP_USE_WIFI
 }
 
+void on_wifi_disconnected(WiFiEvent_t event, WiFiEventInfo_t info)
+{
+#ifdef ESP_USE_WIFI
+
+    if (rtc_time_valid == 1)
+    {
+        WiFi.disconnect();
+        WiFi.mode(WIFI_OFF);
+    }
+    WiFi.reconnect();
+
+#endif // ESP_USE_WIFI
+}
+
 /**
  * @brief A seperate task for receiving MSP messages.
  * Currently unused.
@@ -971,8 +989,27 @@ void send_packet(uint16_t ident, HardwareSerial *serial)
         break;
 
     case PSA_IDENT_RADIO_PRESETS:
-        presets_packet.packet.crc = calculate_crc(presets_packet.buffer, sizeof(presets_packet));
-        serial->write(presets_packet.buffer, sizeof(presets_packet));
+        switch (radio_packet.packet.data.band)
+        {
+        case PSA_AM_1:
+            presets_packet[PSA_PRESET_AM].packet.crc = calculate_crc(presets_packet[PSA_PRESET_AM].buffer, sizeof(*presets_packet));
+            serial->write(presets_packet[PSA_PRESET_AM].buffer, sizeof(*presets_packet));
+            break;
+        case PSA_FM_1:
+            presets_packet[PSA_PRESET_FM_1].packet.crc = calculate_crc(presets_packet[PSA_PRESET_FM_1].buffer, sizeof(*presets_packet));
+            serial->write(presets_packet[PSA_PRESET_FM_1].buffer, sizeof(*presets_packet));
+            break;
+        case PSA_FM_2:
+            presets_packet[PSA_PRESET_FM_2].packet.crc = calculate_crc(presets_packet[PSA_PRESET_FM_2].buffer, sizeof(*presets_packet));
+            serial->write(presets_packet[PSA_PRESET_FM_2].buffer, sizeof(*presets_packet));
+            break;
+        case PSA_FM_AST:
+            presets_packet[PSA_PRESET_FMAST].packet.crc = calculate_crc(presets_packet[PSA_PRESET_FMAST].buffer, sizeof(*presets_packet));
+            serial->write(presets_packet[PSA_PRESET_FMAST].buffer, sizeof(*presets_packet));
+            break;
+        default:
+            break;
+        }
         break;
 
     case PSA_IDENT_HEADUNIT:
@@ -1323,16 +1360,17 @@ void setup()
     pinMode(4, INPUT_PULLDOWN); // Wakeup pin, If low, go to sleep
 
 #ifdef ESP_USE_WIFI
-    WiFi.onEvent(on_wifi_ip_callback, WiFiEvent_t::ARDUINO_EVENT_WIFI_STA_GOT_IP); // Event handler for when ESP gets an IP
+    WiFi.onEvent(on_wifi_ip_callback, WiFiEvent_t::ARDUINO_EVENT_WIFI_STA_GOT_IP);        // Event handler for when ESP gets an IP
+    WiFi.onEvent(on_wifi_disconnected, WiFiEvent_t::ARDUINO_EVENT_WIFI_STA_DISCONNECTED); // Event handlef for when the ESP fails to connect to WiFi
 
-    if (rtc_time_valid == 0)
-    {
-        WiFi.begin(ssid, password);
-    }
-    else // If the time is already set, don't even connect. Could probably be done better, but for now it's fine.
-    {
-        WiFi.mode(WIFI_OFF);
-    }
+    WiFi.begin(ssid, password);
+    // if (rtc_time_valid == 0)
+    // {
+    // }
+    // else // If the time is already set, don't even connect. Could probably be done better, but for now it's fine.
+    // {
+    //     WiFi.mode(WIFI_OFF);
+    // }
 #else
     WiFi.mode(WIFI_OFF);
 
@@ -1375,7 +1413,10 @@ void setup()
     memset(msp_response_buffer, 0, sizeof(msp_response_buffer));
     memset(engine_packet.buffer, 0, sizeof(engine_packet));
     memset(radio_packet.buffer, 0, sizeof(radio_packet));
-    memset(presets_packet.buffer, 0, sizeof(presets_packet));
+    for (int i = 0; i < PSA_PRESET_MAX; ++i)
+    {
+        memset(presets_packet[i].buffer, 0, sizeof(*presets_packet));
+    }
     memset(vin_packet.buffer, 0, sizeof(vin_packet));
     memset(dash_packet.buffer, 0, sizeof(dash_packet));
     memset(door_packet.buffer, 0, sizeof(door_packet));
@@ -1386,12 +1427,18 @@ void setup()
 
     if (presets_data_valid == 0)
     {
-        memset(store_presets_packet.buffer, 0, sizeof(presets_packet));
+        for (int i = 0; i < PSA_PRESET_MAX; ++i)
+        {
+            memset(store_presets_packet[i].buffer, 0, sizeof(*store_presets_packet));
+        }
         presets_data_valid = 1;
     }
     else
     {
-        memcpy(presets_packet.buffer, store_presets_packet.buffer, sizeof(presets_packet));
+        for (int i = 0; i < PSA_PRESET_MAX; ++i)
+        {
+            memcpy(presets_packet[i].buffer, store_presets_packet[i].buffer, sizeof(*presets_packet));
+        }
     }
 
     // Populate all buffer pointers for the VAN packet parser to fill out.
@@ -1400,7 +1447,10 @@ void setup()
     data_buffers.door_data = &(door_packet.packet.data);
     data_buffers.engine_data = &(engine_packet.packet.data);
     data_buffers.radio_data = &(radio_packet.packet.data);
-    data_buffers.presets_data = &(presets_packet.packet.data);
+    data_buffers.presets_data_am = &(presets_packet[PSA_PRESET_AM].packet.data);
+    data_buffers.presets_data_fm_1 = &(presets_packet[PSA_PRESET_FM_1].packet.data);
+    data_buffers.presets_data_fm_2 = &(presets_packet[PSA_PRESET_FM_2].packet.data);
+    data_buffers.presets_data_fm_ast = &(presets_packet[PSA_PRESET_FMAST].packet.data);
     data_buffers.vin_data = &(vin_packet.packet.vin);
     data_buffers.trip_data = &(trip_packet.packet.data);
     data_buffers.headunit_data = &(headunit_packet.packet.data);
@@ -1446,15 +1496,15 @@ void setup()
         0);
 
 #ifdef ESP_USE_WIFI
-    // Create a wifi retry task on core 0
-    xTaskCreatePinnedToCore(
-        wifi_retry_task,
-        "WifiRetry",
-        1000,
-        NULL,
-        1,
-        NULL,
-        0);
+    // // Create a wifi retry task on core 0
+    // xTaskCreatePinnedToCore(
+    //     wifi_retry_task,
+    //     "WifiRetry",
+    //     1000,
+    //     NULL,
+    //     1,
+    //     NULL,
+    //     0);
 #endif // ESP_USE_WIFI
     xTaskCreatePinnedToCore(
         psa_handle_button_logic_task,
@@ -1498,7 +1548,10 @@ void loop()
     {
         // Serial.println("Going to sleep");
         esp_sleep_enable_ext0_wakeup(GPIO_NUM_4, HIGH);
-        memcpy(store_presets_packet.buffer, presets_packet.buffer, sizeof(presets_packet));
+        for (int i = 0; i < PSA_PRESET_MAX; ++i)
+        {
+            memcpy(store_presets_packet[i].buffer, presets_packet[i].buffer, sizeof(*presets_packet));
+        }
         presets_data_valid = 1;
         esp_deep_sleep_start();
     }
