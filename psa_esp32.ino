@@ -1237,12 +1237,14 @@ int send_VAN_trip_reset(enum psa_trip_meter trip_meter)
     switch (trip_meter)
     {
     case PSA_TRIP_A:
+        VANInterface->disable_channel(7);
         trip_reset_data[0] = 0xA0;
         VANInterface->set_channel_for_transmit_message(7, 0x5E4, trip_reset_data, 2, 1);
         return 0;
         break;
 
     case PSA_TRIP_B:
+        VANInterface->disable_channel(7);
         trip_reset_data[0] = 0x60;
         VANInterface->set_channel_for_transmit_message(7, 0x5E4, trip_reset_data, 2, 1);
         return 0;
@@ -1492,7 +1494,7 @@ void loop()
 
 #ifdef ESP_POWER_CONTROL
     // If the wake pin is LOW, go to deep sleep.
-    if (digitalRead(4) == LOW)
+    if (digitalRead(4) == LOW && car_state <= PSA_STATE_CAR_OFF)
     {
         // Serial.println("Going to sleep");
         esp_sleep_enable_ext0_wakeup(GPIO_NUM_4, HIGH);
