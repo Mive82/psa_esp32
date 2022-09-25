@@ -430,11 +430,11 @@ void psa_calculate_state(void *params)
             raspberry_power_status = 1;
         }
         // PSA_STATE_ECONOMY_MODE
-        else if (dash_packet.packet.data.economy_mode)
-        {
-            update_car_state(PSA_STATE_ECONOMY_MODE);
-            raspberry_power_status = 0;
-        }
+        // else if (dash_packet.packet.data.economy_mode)
+        // {
+        //     update_car_state(PSA_STATE_ECONOMY_MODE);
+        //     raspberry_power_status = 0;
+        // }
         // PSA_STATE_CRANKING
         else if (dash_packet.packet.data.accesories_on == 0 &&
                  dash_packet.packet.data.ignition_on == 1)
@@ -1314,7 +1314,7 @@ void setup()
     // serial_port.begin(500000);
     // serial_port.setTimeout(1);
 
-    // Serial.begin(500000); // Start the UART port
+    // Serial.begin(115200); // Start the UART port
     // Serial.setTimeout(1); // Make the timeout as low as possible
 
     PSA_SERIAL_PORT.begin(500000); // Start the UART port
