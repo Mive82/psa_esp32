@@ -781,6 +781,9 @@ void on_wifi_ip_callback(WiFiEvent_t event, WiFiEventInfo_t info)
     {
         rtc_time_valid = 1;
     }
+
+    delay(4000);
+
     WiFi.disconnect();
     WiFi.mode(WIFI_OFF);
 #endif // ESP_USE_WIFI
@@ -795,7 +798,10 @@ void on_wifi_disconnected(WiFiEvent_t event, WiFiEventInfo_t info)
         WiFi.disconnect();
         WiFi.mode(WIFI_OFF);
     }
-    WiFi.reconnect();
+    else
+    {
+        WiFi.reconnect();
+    }
 
 #endif // ESP_USE_WIFI
 }

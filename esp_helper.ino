@@ -2,6 +2,7 @@
 #include "rom/ets_sys.h"
 #include "soc/rtc_cntl_reg.h"
 #include "soc/sens_reg.h"
+#include "esp_sntp.h"
 
 #include "esp32-hal.h"
 #include "lwip/apps/sntp.h"
@@ -45,7 +46,12 @@ void ntp_config(
     sntp_setservername(0, (char *)server1);
     sntp_setservername(1, (char *)server2);
     sntp_setservername(2, (char *)server3);
+    sntp_set_sync_mode(SNTP_SYNC_MODE_IMMED);
+    Serial.println("Starting sntp");
     sntp_init();
+    sntp_set_sync_mode(SNTP_SYNC_MODE_IMMED);
+    //  sntp_sync_time(tm);
+    //  sntp_sync_time
 }
 
 void set_time_zone(long offset, int dst_offset)

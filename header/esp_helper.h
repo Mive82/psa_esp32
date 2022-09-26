@@ -33,7 +33,10 @@ extern float read_esp32_temperature();
  * @param server2 Second NTP server (optional)
  * @param server3 Third NTP server (optional)
  */
-extern void ntp_config(const char *server1, const char *server2 = NULL, const char *server3 = NULL);
+extern void ntp_config(
+    const char *server1,
+    const char *server2,
+    const char *server3);
 
 /**
  * @brief Set the time zone
