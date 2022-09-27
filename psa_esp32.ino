@@ -69,6 +69,8 @@ uint8_t raspberry_power_status = 0; // Target RPi power status, 0 - Off, 1 - On
 // HardwareSerial serial_port = Serial; // Serial port used, Serial - PC, Serial2 - RPi
 // I haven't been able to run both together reliably
 
+unsigned int wifi_retries = 0;
+
 unsigned long last_cdc_message = 0;    // last cd changer packet timestamp, used to send it every second
 unsigned long current_cdc_message = 0; // Current cd changer packet timestamp, used for overflow safety... I hope
 
@@ -775,6 +777,9 @@ void on_wifi_ip_callback(WiFiEvent_t event, WiFiEventInfo_t info)
 // Serial.println("IP address: ");
 // Serial.println(WiFi.localIP());
 #ifdef ESP_USE_WIFI
+
+    wifi_retries = 0;
+
     ntp_config(ntp_server1, ntp_server2, ntp_server3);
     struct tm tm_test;
     if (getLocalTime(&tm_test))
@@ -784,8 +789,8 @@ void on_wifi_ip_callback(WiFiEvent_t event, WiFiEventInfo_t info)
 
     delay(4000);
 
-    WiFi.disconnect();
-    WiFi.mode(WIFI_OFF);
+    // WiFi.disconnect();
+    // WiFi.mode(WIFI_OFF);
 #endif // ESP_USE_WIFI
 }
 
@@ -793,7 +798,7 @@ void on_wifi_disconnected(WiFiEvent_t event, WiFiEventInfo_t info)
 {
 #ifdef ESP_USE_WIFI
 
-    if (rtc_time_valid == 1)
+    if (rtc_time_valid == 1 && wifi_retries > 10)
     {
         WiFi.disconnect();
         WiFi.mode(WIFI_OFF);
@@ -801,6 +806,7 @@ void on_wifi_disconnected(WiFiEvent_t event, WiFiEventInfo_t info)
     else
     {
         WiFi.reconnect();
+        wifi_retries++;
     }
 
 #endif // ESP_USE_WIFI
