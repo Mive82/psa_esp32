@@ -2,11 +2,11 @@
 
 //#define PSA_SPIFFS_LOG
 
-#define RASPBERRY_POWER_CONTROL // Define to control the Raspberry power on status
+// #define RASPBERRY_POWER_CONTROL // Define to control the Raspberry power on status
 
 #define ESP_USE_WIFI // Define to enable the use of WiFi on the ESP
 
-#define ESP_POWER_CONTROL // Define to enable deep sleep
+// #define ESP_POWER_CONTROL // Define to enable deep sleep
 
 #include "config.h"
 
@@ -59,6 +59,7 @@
 #include "header/version.h"
 
 #include <WiFi.h>
+#include <ESP32DMASPISlave.h>
 
 RTC_DATA_ATTR uint8_t rtc_time_valid = 0; // Is the time set in the RTC
 
@@ -162,6 +163,19 @@ union version_packet_union
 uint8_t msp_input_buffer[MSP_MAX_SIZE]; // Buffer for incoming MSP messages
 
 uint8_t msp_response_buffer[MSP_MAX_SIZE]; // Buffer for MSP responses for SET request messages
+
+uint8_t *spi_slave_tx_buf;
+uint8_t *spi_slave_rx_buf;
+
+volatile uint8_t spi_message_received = 0;
+volatile uint16_t msp_spi_last_message_ident = 0;
+
+ESP32DMASPI::Slave slave;
+
+static TaskHandle_t task_handle_wait_spi = 0;
+static TaskHandle_t task_handle_process_buffer = 0;
+
+const static int spi_response_ready_pin = 2;
 
 #ifdef PSA_SPIFFS_LOG
 
@@ -281,7 +295,7 @@ ESP32_RMT_VAN_RX VAN_RX; // ESP32 VAN receiver instance
 // ESP32 Receiver pin setup
 const uint8_t VAN_DATA_RX_RMT_CHANNEL = 0;
 const uint8_t VAN_DATA_RX_PIN = 21;
-const uint8_t VAN_DATA_RX_LED_INDICATOR_PIN = 2;
+const uint8_t VAN_DATA_RX_LED_INDICATOR_PIN = 0;
 
 // Handles for tasks, they are all on core 0
 TaskHandle_t van_task = NULL;
@@ -298,7 +312,7 @@ void InitTss463()
     // initialize SPI
 
     uint8_t VAN_PIN = 5;      // Set pin 5 as the CS pin
-    spi = new SPIClass(VSPI); // Start spi communication on the VSPI SPI bus
+    spi = new SPIClass(VSPI); // Start spi communication on the VSPI SPI bus, HSPI is used for Raspberry Pi
     spi->begin();
     // instantiate the VAN message sender for a TSS463
     vanSender = new Tss463(VAN_PIN, spi);
@@ -404,7 +418,7 @@ void update_car_state(uint8_t new_car_state)
         // {
         //     esp_timer_stop(timer_handle);
         // }
-        setCpuFrequencyMhz(80);
+        setCpuFrequencyMhz(160);
     }
 
     car_state = new_car_state;
@@ -515,7 +529,7 @@ uint8_t calculate_crc(uint8_t const *const packet, const uint8_t size)
         crc ^= packet[i];
     }
 
-    return crc;
+    return ~crc;
 }
 
 /*
@@ -774,8 +788,8 @@ void psa_end_log()
  */
 void on_wifi_ip_callback(WiFiEvent_t event, WiFiEventInfo_t info)
 {
-// Serial.println("IP address: ");
-// Serial.println(WiFi.localIP());
+    Serial.println("IP address: ");
+    Serial.println(WiFi.localIP());
 #ifdef ESP_USE_WIFI
 
     wifi_retries = 0;
@@ -813,20 +827,6 @@ void on_wifi_disconnected(WiFiEvent_t event, WiFiEventInfo_t info)
 }
 
 /**
- * @brief A seperate task for receiving MSP messages.
- * Currently unused.
- *
- * @param params
- */
-// void msp_receive_task(void *params)
-// {
-//     while (1)
-//     {
-//         receive_msp_message();
-//     }
-// }
-
-/**
  * @brief Periodic retry if clock is not set.
  *
  * @param params
@@ -844,15 +844,6 @@ void wifi_retry_task(void *params)
 #endif // ESP_USE_WIFI
     }
 }
-
-// void serialFlush(int bytes, HardwareSerial serial_port)
-// {
-//     while (bytes > 0)
-//     {
-//         char t = serial_port.read();
-//         bytes--;
-//     }
-// }
 
 /**
  * @brief Send a response to MSP SET request
@@ -1106,6 +1097,227 @@ void send_packet(uint16_t ident, HardwareSerial *serial)
     }
 }
 
+void task_wait_spi(void *pvParameters)
+{
+    while (1)
+    {
+
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        digitalWrite(spi_response_ready_pin, 0);
+
+        switch (msp_spi_last_message_ident)
+        {
+        case PSA_IDENT_VERSIONS:
+        {
+
+            memcpy(spi_slave_tx_buf, version_packet.buffer, sizeof(version_packet));
+            break;
+        }
+        case PSA_IDENT_RADIO_PRESETS:
+        {
+
+            switch (radio_packet.packet.data.band)
+            {
+            case PSA_AM_1:
+                presets_packet[PSA_PRESET_AM].packet.crc = calculate_crc(presets_packet[PSA_PRESET_AM].buffer, sizeof(*presets_packet));
+                memcpy(spi_slave_tx_buf, presets_packet[PSA_PRESET_AM].buffer, sizeof(*presets_packet));
+
+                // serial->write(presets_packet[PSA_PRESET_AM].buffer, sizeof(*presets_packet));
+                break;
+            case PSA_FM_1:
+                presets_packet[PSA_PRESET_FM_1].packet.crc = calculate_crc(presets_packet[PSA_PRESET_FM_1].buffer, sizeof(*presets_packet));
+                memcpy(spi_slave_tx_buf, presets_packet[PSA_PRESET_FM_1].buffer, sizeof(*presets_packet));
+
+                // serial->write(presets_packet[PSA_PRESET_FM_1].buffer, sizeof(*presets_packet));
+                break;
+            case PSA_FM_2:
+                presets_packet[PSA_PRESET_FM_2].packet.crc = calculate_crc(presets_packet[PSA_PRESET_FM_2].buffer, sizeof(*presets_packet));
+                memcpy(spi_slave_tx_buf, presets_packet[PSA_PRESET_FM_2].buffer, sizeof(*presets_packet));
+
+                // serial->write(presets_packet[PSA_PRESET_FM_2].buffer, sizeof(*presets_packet));
+                break;
+            case PSA_FM_AST:
+                presets_packet[PSA_PRESET_FMAST].packet.crc = calculate_crc(presets_packet[PSA_PRESET_FMAST].buffer, sizeof(*presets_packet));
+                memcpy(spi_slave_tx_buf, presets_packet[PSA_PRESET_FMAST].buffer, sizeof(*presets_packet));
+
+                // serial->write(presets_packet[PSA_PRESET_FMAST].buffer, sizeof(*presets_packet));
+                break;
+            default:
+                break;
+            }
+            break;
+        }
+
+        case PSA_IDENT_TIME:
+        {
+
+            if (rtc_time_valid)
+            {
+                struct tm time_now;
+                getLocalTime(&time_now);
+                time_packet.packet.data.valid_time = rtc_time_valid;
+                time_packet.packet.data.day = (uint8_t)time_now.tm_mday;
+                time_packet.packet.data.month = (uint8_t)time_now.tm_mon;
+                time_packet.packet.data.year = (uint8_t)time_now.tm_year;
+                time_packet.packet.data.hour = (uint8_t)time_now.tm_hour;
+                time_packet.packet.data.minutes = (uint8_t)time_now.tm_min;
+                time_packet.packet.data.seconds = (uint8_t)time_now.tm_sec;
+            }
+            else // If time is invalid, send all zeros
+            {
+                time_packet.packet.data.valid_time = rtc_time_valid;
+                time_packet.packet.data.day = 0;
+                time_packet.packet.data.month = 0;
+                time_packet.packet.data.year = 0;
+                time_packet.packet.data.hour = 0;
+                time_packet.packet.data.minutes = 0;
+                time_packet.packet.data.seconds = 0;
+            }
+
+            time_packet.packet.crc = calculate_crc(time_packet.buffer, sizeof(time_packet));
+            memcpy(spi_slave_tx_buf, time_packet.buffer, sizeof(time_packet));
+
+            // serial->write(time_packet.buffer, sizeof(time_packet));
+            break;
+        }
+        case PSA_IDENT_ENGINE:
+        {
+            engine_packet.packet.crc = calculate_crc(engine_packet.buffer, sizeof(engine_packet));
+            memcpy(spi_slave_tx_buf, engine_packet.buffer, sizeof(engine_packet));
+
+            break;
+        }
+        case PSA_IDENT_RADIO:
+        {
+
+            radio_packet.packet.crc = calculate_crc(radio_packet.buffer, sizeof(radio_packet));
+            memcpy(spi_slave_tx_buf, radio_packet.buffer, sizeof(radio_packet));
+            // msp_spi_last_message_ident = 0;
+            break;
+        }
+        case PSA_IDENT_ESP32_TEMP:
+        {
+            // Depends on the ESP board. The temperature sensor is borked on most of them
+            esp32_packet.packet.data.temperature = uint16_t(read_esp32_temperature() * 100);
+            esp32_packet.packet.data.cpu_freq = (uint16_t)getCpuFrequencyMhz();
+            esp32_packet.packet.crc = calculate_crc(esp32_packet.buffer, sizeof(esp32_packet));
+            memcpy(spi_slave_tx_buf, esp32_packet.buffer, sizeof(esp32_packet));
+
+            // serial->write(esp32_packet.buffer, sizeof(esp32_packet));
+            break;
+        }
+        case PSA_IDENT_HEADUNIT:
+        {
+
+            headunit_packet.packet.crc = calculate_crc(headunit_packet.buffer, sizeof(headunit_packet));
+            memcpy(spi_slave_tx_buf, headunit_packet.buffer, sizeof(headunit_packet));
+
+            // serial->write(headunit_packet.buffer, sizeof(headunit_packet));
+            break;
+        }
+        case PSA_IDENT_CD_PLAYER:
+        {
+
+            cd_packet.packet.crc = calculate_crc(cd_packet.buffer, sizeof(cd_packet));
+            memcpy(spi_slave_tx_buf, cd_packet.buffer, sizeof(cd_packet));
+
+            // serial->write(cd_packet.buffer, sizeof(cd_packet));
+            break;
+        }
+        case PSA_IDENT_DASHBOARD:
+        {
+
+            dash_packet.packet.crc = calculate_crc(dash_packet.buffer, sizeof(dash_packet));
+            memcpy(spi_slave_tx_buf, dash_packet.buffer, sizeof(dash_packet));
+
+            // serial->write(dash_packet.buffer, sizeof(dash_packet));
+            break;
+        }
+        case PSA_IDENT_TRIP:
+        {
+
+            trip_packet.packet.crc = calculate_crc(trip_packet.buffer, sizeof(trip_packet));
+            memcpy(spi_slave_tx_buf, trip_packet.buffer, sizeof(trip_packet));
+
+            // serial->write(trip_packet.buffer, sizeof(trip_packet));
+            break;
+        }
+        case PSA_IDENT_DOORS:
+        {
+
+            door_packet.packet.crc = calculate_crc(door_packet.buffer, sizeof(door_packet));
+            memcpy(spi_slave_tx_buf, door_packet.buffer, sizeof(door_packet));
+
+            // serial->write(door_packet.buffer, sizeof(door_packet));
+            break;
+        }
+        case PSA_IDENT_VIN:
+        {
+
+            vin_packet.packet.crc = calculate_crc(vin_packet.buffer, sizeof(vin_packet));
+            memcpy(spi_slave_tx_buf, vin_packet.buffer, sizeof(vin_packet));
+
+            // serial->write(vin_packet.buffer, sizeof(vin_packet));
+            break;
+        }
+        case PSA_IDENT_CAR_STATUS:
+        {
+            status_packet.packet.data.car_state = car_state;
+            status_packet.packet.crc = calculate_crc(status_packet.buffer, sizeof(status_packet));
+            memcpy(spi_slave_tx_buf, status_packet.buffer, sizeof(status_packet));
+
+            // serial->write(status_packet.buffer, sizeof(status_packet));
+            status_packet.packet.data.cd_changer_command = PSA_CD_CHANGER_COMM_NONE;
+            break;
+        }
+        default:
+        {
+            memset(spi_slave_tx_buf, 0xff, MSP_MAX_SIZE);
+            // msp_spi_last_message_ident = 0;
+            break;
+        }
+        }
+        msp_spi_last_message_ident = 0;
+        digitalWrite(spi_response_ready_pin, 1);
+        // block until the transaction comes from master
+        slave.wait(spi_slave_rx_buf, spi_slave_tx_buf, MSP_MAX_SIZE);
+        spi_message_received = 1;
+        digitalWrite(spi_response_ready_pin, 0);
+        xTaskNotifyGive(task_handle_process_buffer);
+    }
+}
+
+void task_process_buffer(void *pvParameters)
+{
+    while (1)
+    {
+        // if (spi_message_received)
+        {
+
+            ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+            digitalWrite(spi_response_ready_pin, 0);
+            // show received data
+            // for (size_t i = 0; i < slave.size(); ++i)
+            // {
+            //     Serial.printf("0x%02x ", spi_slave_rx_buf[i]);
+            // }
+
+            // Serial.println("");
+
+            struct psa_header *header = (struct psa_header *)spi_slave_rx_buf;
+
+            if (header->start == 0x69 && header->direction == '<')
+            {
+                msp_spi_last_message_ident = header->ident;
+            }
+
+            slave.pop();
+            spi_message_received = 0;
+        }
+        xTaskNotifyGive(task_handle_wait_spi);
+    }
+}
+
 #ifdef PSA_SIMULATE
 
 void simulate_engine_data()
@@ -1336,13 +1548,26 @@ void esp_sleep_task(void *params)
 {
     while (1)
     {
-        if (digitalRead(4) == LOW)
+        if (digitalRead(4) == LOW && car_state <= PSA_STATE_CAR_OFF)
         {
             // Serial.println("Going to sleep");
             esp_sleep_enable_ext0_wakeup(GPIO_NUM_4, HIGH);
+            for (int i = 0; i < PSA_PRESET_MAX; ++i)
+            {
+                memcpy(store_presets_packet[i].buffer, presets_packet[i].buffer, sizeof(*presets_packet));
+            }
+            presets_data_valid = 1;
             esp_deep_sleep_start();
         }
-        vTaskDelay(3000 / portTICK_PERIOD_MS);
+        vTaskDelay(5 / portTICK_PERIOD_MS);
+    }
+}
+
+void msp_receive_task(void *params)
+{
+    while (1)
+    {
+        receive_msp_message(&PSA_SERIAL_PORT);
     }
 }
 
@@ -1355,7 +1580,7 @@ void setup()
     setCpuFrequencyMhz(80);
     // btStop();
     //#ifndef PSA_SIMULATE
-    pinMode(13, INPUT); // Make it so the PI stays on
+    // pinMode(13, INPUT); // Make it so the PI stays on
     // pinMode(13, OUTPUT);
     // digitalWrite(13, LOW);
     set_time_zone(-utc_offset, dst_offset); // Set the time zone according to set offset
@@ -1363,13 +1588,24 @@ void setup()
     // serial_port.begin(500000);
     // serial_port.setTimeout(1);
 
-    // Serial.begin(115200); // Start the UART port
+    Serial.begin(115200); // Start the UART port
     // Serial.setTimeout(1); // Make the timeout as low as possible
 
     PSA_SERIAL_PORT.begin(500000); // Start the UART port
     PSA_SERIAL_PORT.setTimeout(1); // Make the timeout as low as possible
 
     pinMode(4, INPUT_PULLDOWN); // Wakeup pin, If low, go to sleep
+    pinMode(spi_response_ready_pin, OUTPUT);
+    digitalWrite(spi_response_ready_pin, 0);
+    spi_slave_rx_buf = slave.allocDMABuffer(MSP_MAX_SIZE);
+    spi_slave_tx_buf = slave.allocDMABuffer(MSP_MAX_SIZE);
+
+    memset(spi_slave_rx_buf, 0, MSP_MAX_SIZE);
+    memset(spi_slave_tx_buf, 0, MSP_MAX_SIZE);
+
+    slave.setDataMode(SPI_MODE0);
+    slave.setMaxTransferSize(MSP_MAX_SIZE);
+    slave.begin(HSPI);
 
 #ifdef ESP_USE_WIFI
     WiFi.onEvent(on_wifi_ip_callback, WiFiEvent_t::ARDUINO_EVENT_WIFI_STA_GOT_IP);        // Event handler for when ESP gets an IP
@@ -1536,15 +1772,43 @@ void setup()
     //     NULL,
     //     1);
 #ifdef ESP_POWER_CONTROL
+    xTaskCreatePinnedToCore(
+        esp_sleep_task,
+        "SleepTask",
+        1000,
+        NULL,
+        1,
+        NULL,
+        1);
+#endif // ESP_POWER_CONTROL
+
     // xTaskCreatePinnedToCore(
-    //     esp_sleep_task,
-    //     "SleepTask",
+    //     msp_receive_task,
+    //     "MSPTask",
     //     1000,
     //     NULL,
-    //     1,
+    //     2,
     //     NULL,
     //     1);
-#endif // ESP_POWER_CONTROL
+
+    xTaskCreatePinnedToCore(
+        task_wait_spi,
+        "task_wait_spi",
+        10000,
+        NULL,
+        12,
+        &task_handle_wait_spi,
+        1);
+
+    xTaskNotifyGive(task_handle_wait_spi);
+    xTaskCreatePinnedToCore(
+        task_process_buffer,
+        "task_process_buffer",
+        10000,
+        NULL,
+        12,
+        &task_handle_process_buffer,
+        1);
 
     // rpi_off_timer_timeout
 
@@ -1555,20 +1819,20 @@ void loop()
 {
 
 #ifdef ESP_POWER_CONTROL
-    // If the wake pin is LOW, go to deep sleep.
-    if (digitalRead(4) == LOW && car_state <= PSA_STATE_CAR_OFF)
-    {
-        // Serial.println("Going to sleep");
-        esp_sleep_enable_ext0_wakeup(GPIO_NUM_4, HIGH);
-        for (int i = 0; i < PSA_PRESET_MAX; ++i)
-        {
-            memcpy(store_presets_packet[i].buffer, presets_packet[i].buffer, sizeof(*presets_packet));
-        }
-        presets_data_valid = 1;
-        esp_deep_sleep_start();
-    }
+    // // If the wake pin is LOW, go to deep sleep.
+    // if (digitalRead(4) == LOW && car_state <= PSA_STATE_CAR_OFF)
+    // {
+    //     // Serial.println("Going to sleep");
+    //     esp_sleep_enable_ext0_wakeup(GPIO_NUM_4, HIGH);
+    //     for (int i = 0; i < PSA_PRESET_MAX; ++i)
+    //     {
+    //         memcpy(store_presets_packet[i].buffer, presets_packet[i].buffer, sizeof(*presets_packet));
+    //     }
+    //     presets_data_valid = 1;
+    //     esp_deep_sleep_start();
+    // }
 #endif // ESP_POWER_CONTROL
-    receive_msp_message(&PSA_SERIAL_PORT);
+    // receive_msp_message(&PSA_SERIAL_PORT);
 
 #ifdef PSA_SPIFFS_LOG
 
@@ -1614,16 +1878,16 @@ void loop()
 
 #else
 
-    current_cdc_message = millis();
+    // current_cdc_message = millis();
 
-    // Send a new cd changer message every second.
-    // The contents don't matter, just that the header and footer change
-    if (current_cdc_message - last_cdc_message >= 1000) // Cd changer message
-    {
-        // cdc_time_passed = 0;
-        last_cdc_message = current_cdc_message;
-        AnswerToCDC(); // TSS463C transmitter
-    }
+    // // Send a new cd changer message every second.
+    // // The contents don't matter, just that the header and footer change
+    // if (current_cdc_message - last_cdc_message >= 1000) // Cd changer message
+    // {
+    //     // cdc_time_passed = 0;
+    //     last_cdc_message = current_cdc_message;
+    //     AnswerToCDC(); // TSS463C transmitter
+    // }
 
 #endif // USE_SOFTWARE_VAN
 

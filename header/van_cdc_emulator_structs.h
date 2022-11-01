@@ -24,17 +24,17 @@ enum van_cd_changer_cd_presence
 
 struct van_cd_changer_packet
 {
-    uint8_t header;
-    uint8_t shuffle;
-    uint8_t status;
-    uint8_t cd_present;
-    uint8_t minutes;
-    uint8_t seconds;
-    uint8_t track_num;
-    uint8_t cd_num;
-    uint8_t total_tracks;
+    uint8_t header;       // 0x80 to 0x87. Same as footer
+    uint8_t shuffle;      // 1 if tracks are shuffled
+    uint8_t status;       // enum van_cd_changer_status
+    uint8_t cd_present;   // enum van_cd_changer_cd_presence
+    uint8_t minutes;      // Track minute progress in bcd
+    uint8_t seconds;      // Track seconds progress in the current minute in bcd
+    uint8_t track_num;    // Number of the current track in bcd
+    uint8_t cd_num;       // Number of the current CD in bcd
+    uint8_t total_tracks; // Total number of tracks in bcd
     uint8_t unknown;
-    uint8_t cd_flag;
+    uint8_t cd_flag; // bitwise representation of present CDs
     uint8_t footer;
 } __attribute__((packed));
 
