@@ -1603,7 +1603,7 @@ void setup()
     memset(spi_slave_rx_buf, 0, MSP_MAX_SIZE);
     memset(spi_slave_tx_buf, 0, MSP_MAX_SIZE);
 
-    slave.setDataMode(SPI_MODE0);
+    slave.setDataMode(SPI_MODE1);
     slave.setMaxTransferSize(MSP_MAX_SIZE);
     slave.begin(HSPI);
 
@@ -1763,14 +1763,15 @@ void setup()
         NULL,
         0);
 
-    // xTaskCreatePinnedToCore(
-    //     cdc_message_task,
-    //     "CDCTask",
-    //     1000,
-    //     NULL,
-    //     1,
-    //     NULL,
-    //     1);
+    xTaskCreatePinnedToCore(
+        cdc_message_task,
+        "CDCTask",
+        10000,
+        NULL,
+        1,
+        NULL,
+        1);
+
 #ifdef ESP_POWER_CONTROL
     xTaskCreatePinnedToCore(
         esp_sleep_task,
@@ -1800,7 +1801,6 @@ void setup()
         &task_handle_wait_spi,
         1);
 
-    xTaskNotifyGive(task_handle_wait_spi);
     xTaskCreatePinnedToCore(
         task_process_buffer,
         "task_process_buffer",
@@ -1810,6 +1810,7 @@ void setup()
         &task_handle_process_buffer,
         1);
 
+    xTaskNotifyGive(task_handle_wait_spi);
     // rpi_off_timer_timeout
 
 #endif // PSA_SIMULATE
