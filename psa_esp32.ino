@@ -8,15 +8,15 @@
 
 // #define ESP_POWER_CONTROL // Define to enable deep sleep
 
+// Use the rmt lib to receive VAN messages.
+// If not defined, TSS463C will be used to receive messages.
+// If defined, the rmt library will be used to receive messages.
+// Use this when developing a parser for an unknown iden
+#define ESP_USE_RMT_VAN_LIB
+
 #include "config.h"
 
-#ifndef PSA_SIMULATE
-
-#ifdef USE_SOFTWARE_VAN
-
-#include <VanBus.h>
-#include <VanBusRx.h>
-#include <VanBusTx.h>
+#ifdef PSA_SIMULATE
 
 #else
 
@@ -26,17 +26,35 @@
 #include <tss463.h>
 
 // Everything related to receiving VAN packets
+
+#ifdef ESP_USE_RMT_VAN_LIB
+
 #include <esp32_arduino_rmt_van_rx.h>
 #include <esp32_rmt_van_rx.h>
 
-#define VAN_824_CHANNEL 0
-#define VAN_564_CHANNEL 1
-#define VAN_8A4_CHANNEL 2
-#define VAN_4D4_CHANNEL 3
-#define VAN_554_CHANNEL 4
-#define VAN_E24_CHANNEL 5
+#else
 
-#endif // USE SOFTWARE_VAN
+#define VAN_824_CHANNEL 0 // RPM Iden - Write, NACK
+#define VAN_564_CHANNEL 1 // Car status 1 Iden - Read, ACK - Asked by the display, answered by the BSI
+#define VAN_4D4_CHANNEL 2 // Audio Settings Iden - Read, ACK - Asked by the display, answered by the Radio
+#define VAN_554_CHANNEL 3 // Head Unit Iden - Read, ACK - Asked by the display, answered by the Radio
+#define VAN_4FC_CHANNEL   // Light Status Iden - Write, ACK - Sent by BSI, ACK-ed by the dashboard
+#define VAN_8EC_CHANNEL   // CDC Command Iden - Write, ACK - Has to be ACK-ed by me
+#define VAN_8C4_CHANNEL 4 // Button reports - Write, ACK - Sent from Radio, ACK-ed by display
+#define VAN_8A4_CHANNEL   // Engine Iden - Write, NACK - Sent from BSI
+#define VAN_E24_CHANNEL   // VIN iden - Write, NACK - Sent from BSI
+#define VAN_524_CHANNEL   // Car Status 2 Iden - Write, NACK - Error messages for display, Sent by BSI
+
+#define VAN_RECEIVE_CHANNEL 6
+#define VAN_CDC_COMM_CHANNEL 5
+
+#define VAN_CHANNELS_MIN 0
+#define VAN_CHANNELS_MAX 6
+
+#endif // ESP_USE_RMT_VAN_LIB
+
+#define VAN_TRIP_RESET_CHANNEL 8
+#define VAN_CDC_CHANNEL 7
 
 #include "header/van_packet_parser.h" // Parsing received packets
 
@@ -210,14 +228,6 @@ const uint16_t radio_station_freqs[] = {
 
 #endif
 
-// const int TX_PIN = D1;
-// const int RX_PIN = D2;
-
-#ifdef USE_SOFTWARE_VAN
-const int TX_PIN = 22;
-const int RX_PIN = 23;
-#endif // USE_SOFTWARE_VAN
-
 #ifndef PSA_SIMULATE
 
 SemaphoreHandle_t mutex = xSemaphoreCreateMutex(); // A mutex just in case, probably not even doing anything
@@ -270,18 +280,9 @@ volatile uint16_t curr_range = 1000;
 volatile unsigned long last_trip = 0;
 #endif
 
-// struct psa_incoming_msp_packet msp_message;
-// struct psa_vin_packet vin_packet;
-
 struct psa_output_data_buffers data_buffers; // Pointers to MSP buffers that will be filled out by the VAN parser
 
 #ifndef PSA_SIMULATE
-
-#ifdef USE_SOFTWARE_VAN
-
-TVanPacketRxDesc van_rx_pkt;
-
-#else
 
 SPIClass *spi;            // Spi instance, used for comms with the TSS463C
 ITss46x *vanSender;       // Creating a TSS instance
@@ -290,9 +291,12 @@ TSS46X_VAN *VANInterface; // Ditto
 uint8_t van_message[34];     // Buffer for incoming VAN message, the entire VAN packet has a max size of 32
 uint8_t van_message_len = 0; // Length of the message received
 
+#ifdef ESP_USE_RMT_VAN_LIB
+
 ESP32_RMT_VAN_RX VAN_RX; // ESP32 VAN receiver instance
 
 // ESP32 Receiver pin setup
+#endif
 const uint8_t VAN_DATA_RX_RMT_CHANNEL = 0;
 const uint8_t VAN_DATA_RX_PIN = 21;
 const uint8_t VAN_DATA_RX_LED_INDICATOR_PIN = 0;
@@ -331,11 +335,23 @@ void van_receive_task(void *params)
 
     uint8_t *van_message_ptr = (uint8_t *)van_message; // Unneccesary cast, but to be safe
 
+#ifndef ESP_USE_RMT_VAN_LIB
+    uint8_t current_channel = VAN_CANNELS_MIN;
+#endif
     // All tasks must have a loop like this
     while (1)
     {
+        // current_cdc_message = millis();
 
-        xSemaphoreTake(mutex, portMAX_DELAY);              // Mutex stuff, hopefully does something
+        // Send a new cd changer message every second.
+        // The contents don't matter, just that the header and footer change
+        MessageLengthAndStatusRegister cdc_message_status = VANInterface->message_available(VAN_CDC_CHANNEL);
+        if (cdc_message_status.data.CHTx)
+        {
+            AnswerToCDC();
+        }
+        xSemaphoreTake(mutex, portMAX_DELAY); // Mutex stuff, hopefully does something
+#ifdef ESP_USE_RMT_VAN_LIB
         VAN_RX.Receive(&van_message_len, van_message_ptr); // Receives a new VAN frame
                                                            // The first byte contains the SOF byte, 0x0E
                                                            // The second and third bytes are the IDEN (12 bits) and COMMAND (4 bits)
@@ -371,13 +387,51 @@ void van_receive_task(void *params)
                 // }
             }
         }
+#else
+        if (current_channel > VAN_CHANNELS_MAX)
+        {
+            current_channel = VAN_CHANNELS_MIN;
+        }
+
+        if (current_channel == VAN_RECEIVE_CHANNEL)
+        {
+            MessageLengthAndStatusRegister messageAvailable = VANInterface->message_available(current_channel);
+            if ((messageAvailable.data.CHRx || messageAvailable.data.CHTx))
+            {
+                VANInterface->read_message(current_channel, &van_message_len, van_message_ptr);
+                if (van_message[0] == 0x00)
+                {
+                    continue;
+                }
+                VANInterface->reactivate_channel(current_channel);
+
+                psa_parse_van_packet_esp32(get_iden_from_bytes(van_message[0], van_message[1]), van_message_len - 2, van_message_ptr + 2, &data_buffers);
+            }
+        }
+        else
+        {
+            MessageLengthAndStatusRegister messageAvailable = VANInterface->message_available(current_channel);
+            if ((messageAvailable.data.CHRx || messageAvailable.data.CHTx) && !messageAvailable.data.CHER)
+            {
+                VANInterface->read_message(current_channel, &van_message_len, van_message_ptr);
+                if (van_message[0] == 0x00)
+                {
+                    continue;
+                }
+                VANInterface->reactivate_channel(current_channel);
+
+                psa_parse_van_packet_esp32(get_iden_from_bytes(van_message[0], van_message[1]), van_message_len - 2, van_message_ptr + 2, &data_buffers);
+            }
+        }
+
+        current_channel++;
+
+#endif
         xSemaphoreGive(mutex);
-        vTaskDelay(5 / portTICK_PERIOD_MS); // A delay, so it doesn't take up all processing time
+        vTaskDelay(2 / portTICK_PERIOD_MS); // A delay, so it doesn't take up all processing time
         // delay(7);
     }
 }
-
-#endif // USE_SOFTWARE_VAN
 
 void update_rasbperry_power_state(int power)
 {
@@ -1488,7 +1542,7 @@ void AnswerToCDC()
     cd_changer_emu_packet.packet.header = new_header_byte;
     cd_changer_emu_packet.packet.footer = new_header_byte;
 
-    VANInterface->set_channel_for_immediate_reply_message(8, 0x4EC, cd_changer_emu_packet.buffer, 12);
+    VANInterface->set_channel_for_immediate_reply_message(VAN_CDC_CHANNEL, 0x4EC, cd_changer_emu_packet.buffer, 12);
 }
 
 int send_VAN_trip_reset(enum psa_trip_meter trip_meter)
@@ -1500,14 +1554,14 @@ int send_VAN_trip_reset(enum psa_trip_meter trip_meter)
     case PSA_TRIP_A:
         VANInterface->disable_channel(7);
         trip_reset_data[0] = 0xA0;
-        VANInterface->set_channel_for_transmit_message(7, 0x5E4, trip_reset_data, 2, 1);
+        VANInterface->set_channel_for_transmit_message(VAN_TRIP_RESET_CHANNEL, 0x5E4, trip_reset_data, 2, 1);
         return 0;
         break;
 
     case PSA_TRIP_B:
         VANInterface->disable_channel(7);
         trip_reset_data[0] = 0x60;
-        VANInterface->set_channel_for_transmit_message(7, 0x5E4, trip_reset_data, 2, 1);
+        VANInterface->set_channel_for_transmit_message(VAN_TRIP_RESET_CHANNEL, 0x5E4, trip_reset_data, 2, 1);
         return 0;
         break;
     default:
@@ -1532,15 +1586,16 @@ void cdc_message_task(void *params)
 
         // Send a new cd changer message every second.
         // The contents don't matter, just that the header and footer change
-        if (current_cdc_message - last_cdc_message >= 1000) // Cd changer message
+        if (current_cdc_message - last_cdc_message >= 900) // Cd changer message
         {
+            // Serial.println("Sending CDC packet...");
             // cdc_time_passed = 0;
-            xSemaphoreTake(mutex, portMAX_DELAY); // Mutex stuff, hopefully does something
+            // xSemaphoreTake(mutex, portMAX_DELAY); // Mutex stuff, hopefully does something
             last_cdc_message = current_cdc_message;
             AnswerToCDC(); // TSS463C transmitter
-            xSemaphoreGive(mutex);
+            // xSemaphoreGive(mutex);
         }
-        vTaskDelay(5 / portTICK_PERIOD_MS);
+        vTaskDelay(1 / portTICK_PERIOD_MS);
     }
 }
 
@@ -1568,6 +1623,7 @@ void msp_receive_task(void *params)
     while (1)
     {
         receive_msp_message(&PSA_SERIAL_PORT);
+        vTaskDelay(1 / portTICK_PERIOD_MS);
     }
 }
 
@@ -1588,7 +1644,7 @@ void setup()
     // serial_port.begin(500000);
     // serial_port.setTimeout(1);
 
-    Serial.begin(115200); // Start the UART port
+    // Serial.begin(115200); // Start the UART port
     // Serial.setTimeout(1); // Make the timeout as low as possible
 
     PSA_SERIAL_PORT.begin(500000); // Start the UART port
@@ -1631,23 +1687,30 @@ void setup()
 
 #ifndef PSA_SIMULATE
 
-#ifdef USE_SOFTWARE_VAN
-    TVanBus::Setup(RX_PIN, TX_PIN);
-
-#else
     assert(mutex); // Initialize the mutex
 
     esp_log_level_set("*", ESP_LOG_NONE);
 
     InitTss463(); // TSS463 VAN driver init
-
+#ifdef ESP_USE_RMT_VAN_LIB
     // Software VAN reader init, VAN_NETWORK_TYPE_COMFORT is 125k
     VAN_RX.Init(VAN_DATA_RX_RMT_CHANNEL, VAN_DATA_RX_PIN, VAN_DATA_RX_LED_INDICATOR_PIN, VAN_LINE_LEVEL_HIGH, VAN_NETWORK_TYPE_COMFORT);
-
+#endif // ESP_USE_RMT_VAN_LIB
     VANInterface = new TSS46X_VAN(vanSender, VAN_125KBPS);
     VANInterface->begin();
 
-#endif // USE_SOFTWARE_VAN
+#ifndef ESP_USE_RMT_VAN_LIB
+    pinMode(VAN_DATA_RX_PIN, INPUT);
+    VANInterface->set_channel_for_receive_message(VAN_824_CHANNEL, 0x824, 7, 0);
+    VANInterface->set_channel_for_reply_request_message_without_transmission(VAN_564_CHANNEL, 0x564, 27);
+    VANInterface->set_channel_for_reply_request_message_without_transmission(VAN_4D4_CHANNEL, 0x4D4, 11);
+    VANInterface->set_channel_for_reply_request_message_without_transmission(VAN_554_CHANNEL, 0x554, 22);
+    VANInterface->set_channel_for_receive_message(VAN_8C4_CHANNEL, 0x8C4, 5, 0);
+    VANInterface->set_channel_for_receive_message(VAN_RECEIVE_CHANNEL, 0x00, 30, 0);
+    VANInterface->set_channel_for_receive_message(VAN_CDC_COMM_CHANNEL, 0x8EC, 5, 1);
+
+#endif // ESP_USE_RMT_VAN_LIB
+
 #endif // PSA_SIMULATE
 
     //#endif
@@ -1727,7 +1790,7 @@ void setup()
     xTaskCreatePinnedToCore(
         van_receive_task,
         "VanRecvTask",
-        1000,
+        10000,
         NULL,
         2,
         &van_task,
@@ -1763,14 +1826,14 @@ void setup()
         NULL,
         0);
 
-    xTaskCreatePinnedToCore(
-        cdc_message_task,
-        "CDCTask",
-        10000,
-        NULL,
-        1,
-        NULL,
-        1);
+    // xTaskCreatePinnedToCore(
+    //     cdc_message_task,
+    //     "CDCTask",
+    //     10000,
+    //     NULL,
+    //     11,
+    //     NULL,
+    //     1);
 
 #ifdef ESP_POWER_CONTROL
     xTaskCreatePinnedToCore(
@@ -1783,34 +1846,34 @@ void setup()
         1);
 #endif // ESP_POWER_CONTROL
 
+    xTaskCreatePinnedToCore(
+        msp_receive_task,
+        "MSPTask",
+        2048,
+        NULL,
+        10,
+        NULL,
+        1);
+
     // xTaskCreatePinnedToCore(
-    //     msp_receive_task,
-    //     "MSPTask",
-    //     1000,
+    //     task_wait_spi,
+    //     "task_wait_spi",
+    //     10000,
     //     NULL,
-    //     2,
-    //     NULL,
+    //     12,
+    //     &task_handle_wait_spi,
     //     1);
 
-    xTaskCreatePinnedToCore(
-        task_wait_spi,
-        "task_wait_spi",
-        10000,
-        NULL,
-        12,
-        &task_handle_wait_spi,
-        1);
+    // xTaskCreatePinnedToCore(
+    //     task_process_buffer,
+    //     "task_process_buffer",
+    //     10000,
+    //     NULL,
+    //     12,
+    //     &task_handle_process_buffer,
+    //     1);
 
-    xTaskCreatePinnedToCore(
-        task_process_buffer,
-        "task_process_buffer",
-        10000,
-        NULL,
-        12,
-        &task_handle_process_buffer,
-        1);
-
-    xTaskNotifyGive(task_handle_wait_spi);
+    // xTaskNotifyGive(task_handle_wait_spi);
     // rpi_off_timer_timeout
 
 #endif // PSA_SIMULATE
@@ -1833,7 +1896,7 @@ void loop()
     //     esp_deep_sleep_start();
     // }
 #endif // ESP_POWER_CONTROL
-    // receive_msp_message(&PSA_SERIAL_PORT);
+       // receive_msp_message(&PSA_SERIAL_PORT);
 
 #ifdef PSA_SPIFFS_LOG
 
@@ -1873,12 +1936,6 @@ void loop()
     simulate_trip_data();
 #else
 
-#ifdef USE_SOFTWARE_VAN
-
-    psa_parse_van_packet_esp8266(&van_rx_pkt, &data_buffers);
-
-#else
-
     // current_cdc_message = millis();
 
     // // Send a new cd changer message every second.
@@ -1889,8 +1946,6 @@ void loop()
     //     last_cdc_message = current_cdc_message;
     //     AnswerToCDC(); // TSS463C transmitter
     // }
-
-#endif // USE_SOFTWARE_VAN
 
 #endif // PSA_SIMULATE
 
